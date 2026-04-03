@@ -1,0 +1,169 @@
+---
+title: "03 sensitivity analysis"
+author: "Ruiyi Tian"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list = ls())
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+source("R/functions.R")
+load_core_packages()
+```
+
+# Purpose
+
+This file contains analyses that support robustness checks and extended results, separated from the main analysis file:
+
+1. exclude follow-up under 2 years
+2. redefine early-onset cancer using `<50 years`
+3. additional adjustment for telomere length and PRS
+4. organ aging additionally adjusted for PhenoAge
+5. repeated-measure stability analyses
+6. optional mediation analyses
+
+# 1. Load derived datasets
+
+```{r load-data}
+load("/path/to/Project/Data/Preprocessed_Project_Data_Derived.RData") 
+```
+
+# 2. Exclude follow-up under 2 years
+
+```{r followup-ge2y, eval=FALSE}
+ukbb_ge2y <- ukbb_systemic_main %>% filter(t_AllCancerEO55 >= 2 | dt_AllSolidCancerEO55 == 0)
+
+pheno_ge2y <- run_cox_series(
+  data = dplyr::filter(ukbb_ge2y, !is.na(Standardized_AA_phenoage)),
+  event_vars = outcomes$eo_main_figure,
+  time_stop_var = "t_AllCancerEO55_age",
+  exposure = "Standardized_AA_phenoage",
+  covariates = ukbb_covars,
+  time_start_var = "ageBaseline"
+)
+
+save_xlsx_list(
+  list(ukbb_pheno_followup_ge2y = pheno_ge2y),
+  file.path(path_results, "tables", "sensitivity_followup_ge2y.xlsx")
+)
+```
+
+# 3. Redefine early-onset cancer as diagnosis before age 50
+
+```{r eo50, eval=FALSE}
+# Recommended upstream naming convention:
+# dt_LungEO50, dt_GastrointestinalEO50, dt_ColorectalEO50, ...
+# t_AllCancerEO50_age
+
+eo50_outcomes <- c(
+  "dt_AllSolidCancerEO50", "dt_LungEO50", "dt_GastrointestinalEO50",
+  "dt_ColorectalEO50", "dt_GIexcludeCRCEO50", "dt_UterusEO50"
+)
+
+pheno_eo50 <- run_cox_series(
+  data = dplyr::filter(ukbb_systemic_main, !is.na(Standardized_AA_phenoage)),
+  event_vars = eo50_outcomes,
+  time_stop_var = "t_AllCancerEO50_age",
+  exposure = "Standardized_AA_phenoage",
+  covariates = ukbb_covars,
+  time_start_var = "ageBaseline"
+)
+
+save_xlsx_list(
+  list(ukbb_pheno_eo50 = pheno_eo50),
+  file.path(path_results, "tables", "sensitivity_eo50.xlsx")
+)
+```
+
+# 4. Additional adjustment for telomere length and PRS
+
+```{r telomere-prs, eval=FALSE}
+extra_covars <- c(
+  ukbb_covars,
+  "zadjusted_ts_log_f22192_0_0",  # telomere length
+  "aging_prs_longevity",
+  "aging_prs_lifespan",
+  "lung_prs",
+  "crc_prs",
+  "endometrial_prs"
+)
+
+pheno_tel_prs <- run_cox_series(
+  data = dplyr::filter(ukbb_systemic_main, !is.na(Standardized_AA_phenoage)),
+  event_vars = c("dt_LungEO55", "dt_GastrointestinalEO55", "dt_UterusEO55"),
+  time_stop_var = "t_AllCancerEO55_age",
+  exposure = "Standardized_AA_phenoage",
+  covariates = extra_covars,
+  time_start_var = "ageBaseline"
+)
+
+save_xlsx_list(
+  list(ukbb_pheno_telomere_prs = pheno_tel_prs),
+  file.path(path_results, "tables", "sensitivity_telomere_prs.xlsx")
+)
+```
+
+# 5. Organ aging additionally adjusted for systemic PhenoAge
+
+```{r organ-plus-pheno, eval=FALSE}
+organ_vars <- get_organ_clock_vars()
+
+organ_adj_pheno <- purrr::map_dfr(organ_vars, function(organ_var) {
+  run_cox_series(
+    data = dplyr::filter(ukbb_organ_ready, !is.na(.data[[organ_var]]) & !is.na(Standardized_AA_phenoage)),
+    event_vars = c("dt_LungEO55", "dt_ColorectalEO55"),
+    time_stop_var = "t_AllCancerEO55_age",
+    exposure = organ_var,
+    covariates = c(ukbb_covars, "Standardized_AA_phenoage"),
+    time_start_var = "ageBaseline"
+  ) %>%
+    mutate(organ = organ_var)
+})
+
+organ_adj_pheno <- add_bh_fdr(organ_adj_pheno, p_col = "p.value", group_cols = c("outcome"))
+
+save_xlsx_list(
+  list(organ_adjusted_for_phenoage = organ_adj_pheno),
+  file.path(path_results, "tables", "sensitivity_organ_plus_pheno.xlsx")
+)
+```
+
+# 6. Late-onset comparison models
+
+```{r late-onset, eval=FALSE}
+pheno_lo55 <- run_cox_series(
+  data = dplyr::filter(ukbb_systemic_main, !is.na(Standardized_AA_phenoage)),
+  event_vars = outcomes$lo_selected,
+  time_stop_var = "t_AllCancerLO55_age",
+  exposure = "Standardized_AA_phenoage",
+  covariates = ukbb_covars,
+  time_start_var = "ageBaseline"
+)
+
+pheno_lo55 <- add_bh_fdr(pheno_lo55, p_col = "p.value")
+
+save_xlsx_list(
+  list(ukbb_pheno_late_onset = pheno_lo55),
+  file.path(path_results, "tables", "sensitivity_late_onset.xlsx")
+)
+```
+
+# 7. Repeated-measure stability of PhenoAge tertiles
+
+```{r repeated-measures, eval=FALSE}
+# Expected upstream object: repeated biomarker dataset with baseline and repeat PhenoAge AA.
+
+# repeated_df <- readRDS(file.path(path_derived, "ukbb_repeat_phenoage.rds"))
+# repeated_df <- repeated_df %>%
+#   mutate(
+#     baseline_tert = add_quantile_group(AA_phenoage_baseline),
+#     repeat_tert   = add_quantile_group(AA_phenoage_repeat)
+#   )
+#
+# stability_tab <- repeated_df %>%
+#   count(baseline_tert, repeat_tert) %>%
+#   group_by(baseline_tert) %>%
+#   mutate(prop = n / sum(n))
+#
+# saveRDS(stability_tab, file.path(path_results, "tables", "repeated_measure_stability.rds"))
+```

@@ -1,0 +1,199 @@
+---
+title: "01 data cohort cleaning"
+author: "Ruiyi Tian"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list = ls())
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+source("R/functions.R")
+load_core_packages()
+```
+
+# Purpose
+
+This file does all **upstream** work:
+
+1. import raw data
+2. harmonize variables
+3. apply manuscript-aligned inclusion and exclusion criteria
+4. derive biological aging metrics
+5. save frozen analysis-ready datasets for downstream analyses
+
+The goal is that **all later Rmd files only read derived datasets created here**.
+
+# 1. Configuration
+
+```{r config}
+# Update these to your machine / repository structure
+path_raw_ukbb   <- "data_raw/ukbb/"
+path_derived    <- "data_derived/"
+path_results    <- "results/"
+
+dir.create(path_derived, recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(path_results, "tables"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(path_results, "figures"), recursive = TRUE, showWarnings = FALSE)
+```
+
+# 2. Import raw source data
+
+```{r import-data}
+# This is a master RData including all analysis file
+load("/path/to/Project/Data/Preprocessed_Project_Data.RData") 
+```
+
+# 3. Harmonize raw variables
+
+## 3.1 UK Biobank: recode biomarkers needed for clocks
+
+```{r ukbb-recode-biomarkers, eval=FALSE}
+# ukbb_raw <- ukbb_raw %>%
+#   mutate(
+#   # Convert units for each aging biomarkers
+#     )), na.rm = TRUE)
+#   )
+```
+
+## 3.2 Common covariate recode
+
+```{r common-recoding, eval=FALSE}
+# Keep this section focused on manuscript variables only.
+# Avoid analysis-specific recodes later in downstream files.
+
+# ukbb_raw <- ukbb_raw %>%
+#   mutate(
+#     # Recategorizing covariates
+#     )
+#   )
+
+# Female-specific covariates used in female cancer models
+ukbb_raw <- ukbb_raw %>%
+  mutate(
+    ageAtMenarcheCat2 = if_else(ageAtMenarcheCat == "Missing", 13.01432, ageAtMenarche),
+    menopauseStatus2 = case_when(
+      menopauseStatus == "Missing" & ageBaseline > 51 ~ "Yes",
+      menopauseStatus == "Missing" & ageBaseline <= 51 ~ "No",
+      menopauseStatus == "Male" ~ "NA",
+      TRUE ~ menopauseStatus
+    ),
+    oralContraceptiveUse2 = case_when(
+      oralContraceptiveUse == "Missing" ~ "Past",
+      oralContraceptiveUse == "Male" ~ "NA",
+      TRUE ~ oralContraceptiveUse
+    ),
+    parity2 = if_else(parityCat == "Missing", 1.620235, parity)
+  )
+```
+
+# 4. Manuscript-aligned cohort definitions
+
+The current manuscript uses the following core design choices:
+
+- UK Biobank participants under age 55 at baseline for the main systemic aging analyses
+- exclusion of prior cancer except non-melanoma skin cancer
+- exclusion of cancer within 6 months of baseline / measurement anchor
+- exclusion of underweight participants (`BMI < 18.5`)
+- exclusion of missing genetic ancestry for the UK Biobank main models
+- clock-specific complete-case biomarker requirements and removal of extreme biomarker values `>5 SD`
+- separate analysis-ready datasets for PhenoAge, KDM, metabolomic age, organ aging, and merged downstream files
+
+## 4.1 UK Biobank main analysis cohort
+
+```{r ukbb-main-cohort, eval=FALSE}
+ukbb_main_base <- ukbb_raw %>%
+  filter(ageBaseline < 55) %>%
+  filter(bmi >= 18.5 | is.na(bmi) == FALSE) %>%
+  filter(is.na(genetic_ancestry_missing_flag) | genetic_ancestry_missing_flag == 0) %>%
+  filter(prior_cancer_excluding_nmsc == 0) %>%
+  filter(cancer_within_6m_of_baseline == 0)
+
+```
+
+## 4.2 UK Biobank PhenoAge-ready cohort
+
+```{r ukbb-phenoage-ready, eval=FALSE}
+pheno_biomarkers <- c(
+  "albumin_gL", "lymph", "mcv", "glucose_mmol", "rdw",
+  "creat_umol", "lncrp", "alp", "wbc"
+)
+
+ukbb_pheno_ready <- ukbb_main_base %>%
+  prepare_phenoage_data(biomarker_cols = pheno_biomarkers, age_col = "age") %>%
+  compute_phenoage_from_biomarkers(age_col = "age", biomarker_cols = pheno_biomarkers) %>%
+  compute_age_acceleration(age_col = age, ba_col = phenoage, prefix = "phenoage")
+
+```
+
+## 4.3 UK Biobank KDM-ready cohort
+
+```{r ukbb-kdm-ready, eval=FALSE}
+kdm_biomarkers <- c(
+  "albumin_gL", "alp", "bun", "creat_umol", "lncrp",
+  "hba1c", "totchol", "glucose_mmol", "fev", "sbp"
+)
+
+ukbb_kdm_ready <- ukbb_main_base %>%
+  filter(if_all(all_of(c("age", "sex", kdm_biomarkers)), ~ !is.na(.x))) %>%
+  remove_sd_outliers(cols = kdm_biomarkers, threshold = 5) %>%
+  compute_kdm_from_biomarkers(sex_col = "sex", biomarker_cols = kdm_biomarkers) %>%
+  compute_age_acceleration(age_col = age, ba_col = kdm, prefix = "kdm")
+
+```
+
+## 4.4 Merge main UK Biobank systemic-aging dataset
+
+```{r ukbb-main-merged, eval=FALSE}
+ukbb_systemic_main <- ukbb_main_base %>%
+  left_join(
+    ukbb_pheno_ready %>%
+      dplyr::select(eid, phenoage, AA_phenoage, Standardized_AA_phenoage,
+                    Tertiles_Standardized_AA_phenoage, Quartiles_Standardized_AA_phenoage),
+    by = "eid"
+  ) %>%
+  left_join(
+    ukbb_kdm_ready %>%
+      dplyr::select(eid, kdm, AA_kdm, Standardized_AA_kdm,
+                    Tertiles_Standardized_AA_kdm, Quartiles_Standardized_AA_kdm),
+    by = "eid"
+  )
+
+```
+
+## 4.5 Metabolomic and organ-aging analysis datasets
+
+```{r ukbb-met-organ, eval=FALSE}
+# Keep these steps here because they belong to upstream dataset creation.
+# The exact formulas / imports can remain in source-specific prep scripts if needed,
+# but this file should be the single place where the final derived datasets are frozen.
+
+# Example
+# ukbb_met_ready   <- ukbb_systemic_main %>% left_join(met_raw, by = "eid")
+# ukbb_organ_ready <- ukbb_systemic_main %>% left_join(organ_raw, by = "eid")
+```
+
+## 4.6 All of Us validation cohort
+
+```{r aou-ready, eval=FALSE}
+### Not publishable due to All of Us policy
+```
+
+# 5. Save cohort flow counts used in the manuscript
+
+```{r flow-counts, eval=FALSE}
+cohort_flow <- list(
+  ukbb_main_base_n = nrow(ukbb_main_base),
+  ukbb_pheno_ready_n = nrow(ukbb_pheno_ready),
+  ukbb_kdm_ready_n = nrow(ukbb_kdm_ready),
+  ukbb_systemic_main_n = nrow(ukbb_systemic_main)
+)
+```
+
+# 6. Final check
+
+Before moving to `02_main_analysis.Rmd`, confirm that:
+
+- cohort counts match the manuscript
+- variable names are harmonized once and only once here
+- all downstream scripts can start from `readRDS()` of derived datasets
+- no analysis-specific ad hoc cleaning remains outside this file

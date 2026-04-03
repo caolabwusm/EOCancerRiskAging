@@ -1,0 +1,206 @@
+---
+title: "02 main analysis"
+author: "Ruiyi Tian"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list = ls())
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+source("R/functions.R")
+load_core_packages()
+```
+
+# Purpose
+
+This file runs the manuscript's **main analyses only**:
+
+1. birth cohort trend analyses
+2. PhenoAge and early-onset cancer associations
+3. KDM and early-onset cancer associations
+4. metabolomic aging and early-onset cancer associations
+5. organ-specific aging and early-onset cancer associations
+
+Everything here should read **frozen** analysis-ready data from `01_data_cohort_cleaning.Rmd`.
+
+# 1. Load derived datasets
+
+```{r load-data}
+path_derived <- "data_derived/"
+path_results <- "results/"
+
+dir.create(file.path(path_results, "tables"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(path_results, "figures"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(path_results, "model_objects"), recursive = TRUE, showWarnings = FALSE)
+
+# Replace with actual file names created in 01.
+# ukbb_systemic_main <- readRDS(file.path(path_derived, "ukbb_systemic_main.rds"))
+# ukbb_met_ready     <- readRDS(file.path(path_derived, "ukbb_met_ready.rds"))
+# ukbb_organ_ready   <- readRDS(file.path(path_derived, "ukbb_organ_ready.rds"))
+# aou_systemic_main  <- readRDS(file.path(path_derived, "aou_systemic_main.rds"))
+
+outcomes <- get_manuscript_outcomes()
+ukbb_covars <- build_base_covariates("ukbb")
+aou_covars  <- build_base_covariates("aou")
+```
+
+# 2. Birth cohort trends
+
+## 2.1 Linear birth cohort models
+
+```{r birth-cohort-linear, eval=FALSE}
+# UKBB PhenoAge AA
+fit_bc_pheno <- fit_birth_cohort_linear(
+  data = ukbb_systemic_main,
+  outcome = "Standardized_AA_phenoage",
+  birth_var = "birthCohort",
+  adjust = c("ageBaseline", "ageSquare")
+)
+
+# UKBB KDM AA
+fit_bc_kdm <- fit_birth_cohort_linear(
+  data = ukbb_systemic_main,
+  outcome = "Standardized_AA_kdm",
+  birth_var = "birthCohort",
+  adjust = c("ageBaseline", "ageSquare")
+)
+
+# Add metabolomic and AoU analogs here once derived datasets are loaded.
+```
+
+## 2.2 GAM birth-year plots
+
+```{r birth-cohort-gam, eval=FALSE}
+fit_gam_pheno <- fit_birth_year_gam(
+  data = ukbb_systemic_main,
+  outcome = "Standardized_AA_phenoage",
+  birth_year = "birthYear",
+  adjust = c("ageBaseline", "ageSquare")
+)
+
+fit_gam_pheno_male <- fit_birth_year_gam(
+  data = dplyr::filter(ukbb_systemic_main, sex == "Male"),
+  outcome = "Standardized_AA_phenoage",
+  birth_year = "birthYear",
+  adjust = c("ageBaseline", "ageSquare")
+)
+
+fit_gam_pheno_female <- fit_birth_year_gam(
+  data = dplyr::filter(ukbb_systemic_main, sex == "Female"),
+  outcome = "Standardized_AA_phenoage",
+  birth_year = "birthYear",
+  adjust = c("ageBaseline", "ageSquare")
+)
+
+saveRDS(
+  list(overall = fit_gam_pheno, male = fit_gam_pheno_male, female = fit_gam_pheno_female),
+  file.path(path_results, "model_objects", "birth_year_gam_pheno.rds")
+)
+```
+
+# 3. Main Cox models: UK Biobank systemic aging
+
+## 3.1 PhenoAge and early-onset cancer risk
+
+```{r phenoage-main-cox, eval=FALSE}
+pheno_cont <- run_cox_series(
+  data = dplyr::filter(ukbb_systemic_main, !is.na(Standardized_AA_phenoage)),
+  event_vars = outcomes$eo_main_figure,
+  time_stop_var = "t_AllCancerEO55_age",
+  exposure = "Standardized_AA_phenoage",
+  covariates = ukbb_covars,
+  time_start_var = "ageBaseline"
+)
+
+pheno_cont <- add_bh_fdr(pheno_cont, p_col = "p.value")
+
+pheno_tertiles <- run_cox_series(
+  data = dplyr::filter(ukbb_systemic_main, !is.na(Tertiles_Standardized_AA_phenoage)),
+  event_vars = outcomes$eo_main_figure,
+  time_stop_var = "t_AllCancerEO55_age",
+  exposure = "Tertiles_Standardized_AA_phenoage",
+  covariates = ukbb_covars,
+  time_start_var = "ageBaseline"
+)
+
+save_xlsx_list(
+  list(pheno_continuous = pheno_cont, pheno_tertiles = pheno_tertiles),
+  file.path(path_results, "tables", "ukbb_phenoage_main.xlsx")
+)
+```
+
+## 3.2 KDM and early-onset cancer risk
+
+```{r kdm-main-cox, eval=FALSE}
+kdm_cont <- run_cox_series(
+  data = dplyr::filter(ukbb_systemic_main, !is.na(Standardized_AA_kdm)),
+  event_vars = outcomes$eo_main_figure,
+  time_stop_var = "t_AllCancerEO55_age",
+  exposure = "Standardized_AA_kdm",
+  covariates = ukbb_covars,
+  time_start_var = "ageBaseline"
+)
+
+kdm_cont <- add_bh_fdr(kdm_cont, p_col = "p.value")
+
+save_xlsx_list(
+  list(kdm_continuous = kdm_cont),
+  file.path(path_results, "tables", "ukbb_kdm_main.xlsx")
+)
+```
+
+# 4. Main Cox models: metabolomic aging
+
+```{r metabolomic-main-cox, eval=FALSE}
+# Recommended column names to standardize upstream:
+# - MetaboAgeMort_calibrated
+# - MetaboAgeMortAccel
+# - Standardized_AA_MetaboAgeMortAccel
+
+met_cont <- run_cox_series(
+  data = dplyr::filter(ukbb_met_ready, !is.na(Standardized_AA_MetaboAgeMortAccel)),
+  event_vars = outcomes$eo_main_figure,
+  time_stop_var = "t_AllCancerEO55_age",
+  exposure = "Standardized_AA_MetaboAgeMortAccel",
+  covariates = ukbb_covars,
+  time_start_var = "ageBaseline"
+)
+
+met_cont <- add_bh_fdr(met_cont, p_col = "p.value")
+
+save_xlsx_list(
+  list(metabolomic_continuous = met_cont),
+  file.path(path_results, "tables", "ukbb_metabolomic_main.xlsx")
+)
+```
+
+# 5. Main Cox models: organ-specific aging
+
+```{r organ-main-cox, eval=FALSE}
+organ_vars <- get_organ_clock_vars()
+
+organ_results <- purrr::map_dfr(organ_vars, function(organ_var) {
+  run_cox_series(
+    data = dplyr::filter(ukbb_organ_ready, !is.na(.data[[organ_var]])),
+    event_vars = c("dt_LungEO55", "dt_ColorectalEO55"),
+    time_stop_var = "t_AllCancerEO55_age",
+    exposure = organ_var,
+    covariates = ukbb_covars,
+    time_start_var = "ageBaseline"
+  ) %>%
+    mutate(organ = organ_var)
+})
+
+organ_results <- add_bh_fdr(organ_results, p_col = "p.value", group_cols = c("outcome"))
+
+save_xlsx_list(
+  list(organ_results = organ_results),
+  file.path(path_results, "tables", "ukbb_organ_main.xlsx")
+)
+```
+
+# 6. All of Us validation analyses
+
+```{r aou-validation, eval=FALSE}
+## Not publishable due to All of Us policy
+```
